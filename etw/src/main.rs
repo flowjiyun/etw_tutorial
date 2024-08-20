@@ -1,7 +1,7 @@
 use core::slice;
 use std::{ffi::{self, c_char, OsStr, OsString}, os::windows::ffi::{OsStrExt, OsStringExt}, ptr};
 
-use windows::{core::{GUID, PCWSTR, PWSTR}, Win32::{Foundation::ERROR_SUCCESS, System::{Diagnostics::Etw::{CloseTrace, ControlTraceW, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW, TdhFormatProperty, TdhGetEventInformation, CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_HEADER_FLAG_STRING_ONLY, EVENT_PROPERTY_INFO, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, TRACE_EVENT_INFO, TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID}, Kernel::NtProductLanManNt}}};
+use windows::{core::{GUID, PCWSTR, PWSTR}, Win32::{Foundation::ERROR_SUCCESS, System::{Diagnostics::Etw::{CloseTrace, ControlTraceW, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW, TdhFormatProperty, TdhGetEventInformation, CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_HEADER_FLAG_32_BIT_HEADER, EVENT_HEADER_FLAG_STRING_ONLY, EVENT_PROPERTY_INFO, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, TRACE_EVENT_INFO, TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID}, Kernel::NtProductLanManNt}}};
 
 fn main() {
     unsafe {
@@ -72,13 +72,21 @@ fn main() {
 }
 
 unsafe extern "system" fn event_record_callback(event_record: *mut EVENT_RECORD) {
-    if (*event_record).EventHeader.EventDescriptor.Id == 30 { // 12 open
+    if (*event_record).EventHeader.EventDescriptor.Id == 12 { // 12 open
 
         println!("event id: {}", (*event_record).EventHeader.EventDescriptor.Id);
-        let flag = (*event_record).EventHeader.Flags;
-        if flag == EVENT_HEADER_FLAG_STRING_ONLY as u16 { 
+        let flag = (*event_record).EventHeader.Flags as u32;
+        if flag & EVENT_HEADER_FLAG_STRING_ONLY != 0 { 
             println!("true");
         }
+        let _pointer_size = {
+            if flag & EVENT_HEADER_FLAG_32_BIT_HEADER != 0 {
+                4
+            } else {
+                8
+            }
+        };
+        println!("pointer_size: {}", _pointer_size);
 
         let mut buffer_size = 0u32;
         let _status = TdhGetEventInformation(event_record, None, None, &mut buffer_size);
@@ -90,52 +98,82 @@ unsafe extern "system" fn event_record_callback(event_record: *mut EVENT_RECORD)
             eprintln!("tdhgeteventinformation failed with error: {:?}", status);
             return ;
         }
+        // print provider name
+        if event_info_ptr.as_ref().unwrap().ProviderNameOffset != 0 {
+            let provider_name = tei_string(&buffer, event_info_ptr.as_ref().unwrap().ProviderNameOffset as usize);
+            println!("provider_name: {}", provider_name);
+        }
 
+        //print task name
+        if event_info_ptr.as_ref().unwrap().TaskNameOffset != 0 {
+            let task_name = tei_string(&buffer, event_info_ptr.as_ref().unwrap().TaskNameOffset as usize);
+            println!("event_name: {}", task_name);
+        }
+        // let integer_values = vec![0u16; event_info_ptr.as_ref().unwrap().PropertyCount as usize];
+        let top_level_property = event_info_ptr.as_ref().unwrap().TopLevelPropertyCount;
         let event_info = &*event_info_ptr;
-        let userdata = (*event_record).UserData as *const u8;
-        let userdata_slice = slice::from_raw_parts(userdata, (*event_record).UserDataLength as usize);
+        for i in 0..top_level_property {
+            let event_property_info = &*(&event_info.EventPropertyInfoArray as *const EVENT_PROPERTY_INFO).offset(i as isize);
+            let property_name = tei_string(&buffer, event_property_info.NameOffset as usize);
+            println!("property_name: {}", property_name);
+        }
+        // let userdata = (*event_record).UserData as *const u8;
+        // let userdata_slice = slice::from_raw_parts(userdata, (*event_record).UserDataLength as usize);
 
-        for i in 0..event_info.PropertyCount {
-            let property_info_ptr = &*(&event_info.EventPropertyInfoArray as *const EVENT_PROPERTY_INFO).offset(i as isize);
-            let name_offset = property_info_ptr.NameOffset;
-            let _property_name = {
-                let name_ptr = (event_info_ptr as *const u8).offset(name_offset as isize);
-                ffi::CStr::from_ptr(name_ptr as *const c_char).to_string_lossy().into_owned()
-            };
-            // println!("property_name: {}", property_name);
-            let mut property_buffer_size = 0u32;
-            let status = TdhFormatProperty(event_info_ptr,
-                 None,
-                  8,
-                   property_info_ptr.Anonymous1.nonStructType.InType,
-                   property_info_ptr.Anonymous1.nonStructType.OutType,
-                    property_info_ptr.Anonymous3.length,
-                     userdata_slice,
-                      &mut property_buffer_size,
-                       PWSTR::null(),
-                    ptr::null_mut(),
-            );
+        // for i in 0..event_info.PropertyCount {
+        //     let property_info_ptr = &*(&event_info.EventPropertyInfoArray as *const EVENT_PROPERTY_INFO).offset(i as isize);
+        //     let name_offset = property_info_ptr.NameOffset;
+        //     let _property_name = {
+        //         let name_ptr = (event_info_ptr as *const u8).offset(name_offset as isize);
+        //         ffi::CStr::from_ptr(name_ptr as *const c_char).to_string_lossy().into_owned()
+        //     };
+        //     // println!("property_name: {}", property_name);
+        //     let mut property_buffer_size = 0u32;
+        //     let status = TdhFormatProperty(event_info_ptr,
+        //          None,
+        //           8,
+        //            property_info_ptr.Anonymous1.nonStructType.InType,
+        //            property_info_ptr.Anonymous1.nonStructType.OutType,
+        //             property_info_ptr.Anonymous3.length,
+        //              userdata_slice,
+        //               &mut property_buffer_size,
+        //                PWSTR::null(),
+        //             ptr::null_mut(),
+        //     );
 
-            if status != 0 {
-                eprintln!("tdhformatproperty failed with error: {:?}", status);
-                return ;
-            } 
-            let mut property_buffer = vec![0; property_buffer_size as usize];
-            let status = TdhFormatProperty(event_info_ptr,
-                 None,
-                  8,
-                   property_info_ptr.Anonymous1.nonStructType.InType,
-                   property_info_ptr.Anonymous1.nonStructType.OutType,
-                    property_info_ptr.Anonymous3.length,
-                     userdata_slice,
-                      &mut property_buffer_size,
-                       PWSTR(property_buffer.as_mut_ptr()),
-                    ptr::null_mut(),
-            );
-            if status == 0 {
-                let formatted_value = OsString::from_wide(&property_buffer).to_string_lossy().into_owned();
-                println!("formatted_value: {}", formatted_value);
-            }
-        } // println!("buffer_size: {}", buffer_size);
+        //     if status != 0 {
+        //         eprintln!("tdhformatproperty failed with error: {:?}", status);
+        //         return ;
+        //     } 
+        //     let mut property_buffer = vec![0; property_buffer_size as usize];
+        //     let status = TdhFormatProperty(event_info_ptr,
+        //          None,
+        //           8,
+        //            property_info_ptr.Anonymous1.nonStructType.InType,
+        //            property_info_ptr.Anonymous1.nonStructType.OutType,
+        //             property_info_ptr.Anonymous3.length,
+        //              userdata_slice,
+        //               &mut property_buffer_size,
+        //                PWSTR(property_buffer.as_mut_ptr()),
+        //             ptr::null_mut(),
+        //     );
+        //     if status == 0 {
+        //         let formatted_value = OsString::from_wide(&property_buffer).to_string_lossy().into_owned();
+        //         println!("formatted_value: {}", formatted_value);
+        //     }
+        // } // println!("buffer_size: {}", buffer_size);
     }
+}
+
+unsafe fn tei_string(tei_buffer: &[u8], offset: usize) -> String {
+    let wide_ptr = tei_buffer.as_ptr().add(offset) as *const u16;
+    let mut length = 0;
+
+    while *wide_ptr.add(length) != 0 {
+        length += 1;
+    }
+    let wide_slice = slice::from_raw_parts(wide_ptr, length);
+    let os_string = OsString::from_wide(wide_slice);
+
+    os_string.to_string_lossy().to_string()
 }
