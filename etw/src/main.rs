@@ -141,16 +141,16 @@ unsafe extern "system" fn event_record_callback(event_record: *mut EVENT_RECORD)
             let file_name = tei_string(slice::from_raw_parts(file_name_ptr, (*event_record).UserDataLength as usize), file_name_offset);
             println!("file_name: {}", file_name);
         } else { // process start event
-            let proccess_id = (*event_record).EventHeader.ProcessId; // process 생성하는 부모 프로세스 id
-            let mut set = PROCESS_LIST.lock().unwrap();
-            if !set.contains(&proccess_id) {
-                set.insert(proccess_id);
-            }
-            println!("process_id: {}", proccess_id);
+            let parent_proc_id = (*event_record).EventHeader.ProcessId; // 부모 프로세스 id
             let proc_ptr = (*event_record).UserData as *const u32;
             let proc_id = *proc_ptr; // 생성된  자식 프로세스 id
+            let mut set = PROCESS_LIST.lock().unwrap();
+            if !set.contains(&proc_id) {
+                set.insert(proc_id);
+            }
+            println!("parent_process_id: {}", parent_proc_id);
             println!("real_proc_id: {}", proc_id);
-            let proc_path = get_process_path(proccess_id);
+            let proc_path = get_process_path(proc_id);
             println!("proc_path: {}", proc_path);
             print_common_info(event_record);
         }
