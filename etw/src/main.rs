@@ -57,13 +57,6 @@ fn main() {
             return ;
         }
 
-        let mut proc_trace_logfile = EVENT_TRACE_LOGFILEW::default();
-        proc_trace_logfile.LoggerName = PWSTR(session_name.as_ptr() as *mut u16);
-        proc_trace_logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
-        proc_trace_logfile.Anonymous2.EventRecordCallback = Some(event_record_callback);
-
-
-
         let status = EnableTraceEx2(session_handle,
             &KERNEL_FILE_GUID,
                 EVENT_CONTROL_CODE_ENABLE_PROVIDER.0,
@@ -78,29 +71,18 @@ fn main() {
             return ;
         }
 
-        let mut file_trace_logfile = EVENT_TRACE_LOGFILEW::default();
-        file_trace_logfile.LoggerName = PWSTR(session_name.as_ptr() as *mut u16);
-        file_trace_logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
-        file_trace_logfile.Anonymous2.EventRecordCallback = Some(event_record_callback);
+        let mut trace_logfile = EVENT_TRACE_LOGFILEW::default();
+        trace_logfile.LoggerName = PWSTR(session_name.as_ptr() as *mut u16);
+        trace_logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+        trace_logfile.Anonymous2.EventRecordCallback = Some(event_record_callback);
 
-        let file_comsumer_handle = OpenTraceW(&mut file_trace_logfile);
-        let proc_comsumer_handle = OpenTraceW(&mut proc_trace_logfile);
-        if proc_comsumer_handle.Value == 0 || file_comsumer_handle.Value == 0 {
-            eprintln!("opentrace failed with error: {:?}", GetLastError());
-            return ;
-        }
-
-        let handles = [proc_comsumer_handle, file_comsumer_handle];
-        println!("comsumer_handles: {:?}", handles);
+        let comsumer_handle = OpenTraceW(&mut trace_logfile);
 
         // 실시간 처리 이벤트의 경우 1개만 handlearray에 넣을 수 있음
         // 파일 처리 이벤트의 경우 64개까지 넣을 수 있음
-        let status = ProcessTrace(&[file_comsumer_handle], Some(ptr::null_mut()), Some(ptr::null_mut()));
-        if status != ERROR_SUCCESS {
-            eprintln!("processtrace failed with error: {:?}", status);
-        } 
-
-        let status = ProcessTrace(&[proc_comsumer_handle], Some(ptr::null_mut()), Some(ptr::null_mut()));
+        // 모든 이벤트를 처리할때 까지 ProcessTrace에서 블로킹블
+        // 시작, 끝시간 주지 않았기 때문에 무한으로 이벤트 처리
+        let status = ProcessTrace(&[comsumer_handle], Some(ptr::null_mut()), Some(ptr::null_mut()));
         if status != ERROR_SUCCESS {
             eprintln!("processtrace failed with error: {:?}", status);
         } 
@@ -188,8 +170,10 @@ unsafe fn print_common_info(event_record: *mut EVENT_RECORD) {
     let event_info = &*event_info_ptr;
     for i in 0..top_level_property {
         let event_property_info = &*(&event_info.EventPropertyInfoArray as *const EVENT_PROPERTY_INFO).offset(i as isize);
+        print_event_property_info(event_property_info);
         let property_name = tei_string(&buffer, event_property_info.NameOffset as usize);
         println!("property_name: {}", property_name);
+        println!();
     }
 }
 
@@ -244,3 +228,61 @@ unsafe fn get_process_path(pid: u32) -> String {
         String::from("bad path")
     }
 }
+
+fn print_event_property_info(info: &EVENT_PROPERTY_INFO) {
+    println!("property_Flags : {:?}", info.Flags);
+    println!("property_NameOffset : {:?}", info.NameOffset);
+    if info.Flags.0 & 0x1 != 0 {
+        println!("property_StructType");
+        unsafe {
+            println!("  {:?}", info.Anonymous1.structType);
+        }
+    } else if info.Flags.0 & 0x1 == 0 {
+        println!("property_nonStructType");
+        unsafe {
+            println!("  {:?}", info.Anonymous1.nonStructType);
+        }
+    } else if info.Flags.0 & 0x80 !=  0 {
+        println!("property_CustomSchema");
+        unsafe {
+            println!("  {:?}", info.Anonymous1.customSchemaType);
+        }
+    }
+    if info.Flags.0 & 0x4 != 0 {
+        unsafe {
+            println!("property_countPropertyIndex : {:?}", info.Anonymous2.countPropertyIndex);
+        }
+    } else {
+        unsafe {
+            println!("property_count : {:?}", info.Anonymous2.count);
+        }
+    }
+    if info.Flags.0 & 0x2 != 0 {
+        unsafe {
+            println!("property_lengthPropertyIndex : {:?}", info.Anonymous3.lengthPropertyIndex);
+        }
+    } else {
+        unsafe {
+            println!("property_length : {:?}", info.Anonymous3.length);
+        }
+    }
+    unsafe {
+        println!("property_reserved : {:?}", info.Anonymous4.Reserved);
+    }
+    if info.Flags.0 & 0x40 != 0 {
+        unsafe {
+            println!("property_tags : {:?}", info.Anonymous4.Anonymous._bitfield);
+        }
+    }
+}
+
+// typedef enum _PROPERTY_FLAGS {
+//   PropertyStruct = 0x1,
+//   PropertyParamLength = 0x2,
+//   PropertyParamCount = 0x4,
+//   PropertyWBEMXmlFragment = 0x8,
+//   PropertyParamFixedLength = 0x10,
+//   PropertyParamFixedCount = 0x20,
+//   PropertyHasTags = 0x40,
+//   PropertyHasCustomSchema = 0x80
+// } PROPERTY_FLAGS;
