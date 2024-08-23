@@ -1,8 +1,11 @@
 use core::slice;
-use std::{collections::HashSet, ffi::{c_void, OsStr, OsString}, os::windows::ffi::{OsStrExt, OsStringExt}, ptr, sync::{Arc, LazyLock, Mutex}};
+use std::{collections::{HashMap, HashSet}, ffi::{c_void, OsStr, OsString}, os::windows::ffi::{OsStrExt, OsStringExt}, ptr, sync::{Arc, LazyLock, Mutex}};
 
+use datatype::{read_data, DataType};
 use windows::{core::{GUID, PCWSTR, PWSTR}, Win32::{Foundation::{CloseHandle, GetLastError, ERROR_SUCCESS}, System::{Diagnostics::Etw::{EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW, TdhGetEventInformation, CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_HEADER_FLAG_32_BIT_HEADER, EVENT_HEADER_FLAG_STRING_ONLY, EVENT_PROPERTY_INFO, EVENT_RECORD, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, TRACE_EVENT_INFO, TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID}, Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ}}}};
 
+
+mod datatype;
 const KERNEL_FILE_GUID: GUID = GUID::from_values(
 0xEDD08927,
 0x9CC4,
@@ -18,6 +21,23 @@ const KERNEL_PROCESS_GUID: GUID = GUID::from_values(
 
 static PROCESS_LIST: LazyLock<Arc<Mutex<HashSet<u32>>>> = LazyLock::new(|| {
     Arc::new(Mutex::new(HashSet::new()))
+});
+
+
+static INTYPE_MAP: LazyLock<HashMap<u16, DataType>> = LazyLock::new(|| {
+    let mut intype_map: HashMap<u16, DataType> = HashMap::new();
+    intype_map.insert(1, DataType::STRING);
+    intype_map.insert(2, DataType::STRING);
+    intype_map.insert(3, DataType::INT8);
+    intype_map.insert(4, DataType::UINT8);
+    intype_map.insert(5, DataType::INT16);
+    intype_map.insert(6, DataType::UINT16);
+    intype_map.insert(7, DataType::INT32);
+    intype_map.insert(8, DataType::UINT32);
+    intype_map.insert(9, DataType::INT64);
+    intype_map.insert(10, DataType::UINT64);
+    intype_map.insert(16, DataType::POINTER);
+    intype_map
 });
 fn main() {
 
@@ -130,11 +150,14 @@ unsafe extern "system" fn event_record_callback(event_record: *mut EVENT_RECORD)
             if !set.contains(&proc_id) {
                 set.insert(proc_id);
             }
+            let proc_seq_ptr = (*event_record).UserData.add(24) as *const u64;
+            let proc_seq = *proc_seq_ptr;
             println!("parent_process_id: {}", parent_proc_id);
             println!("real_proc_id: {}", proc_id);
+            println!("proc_seq: {}", proc_seq);
             let proc_path = get_process_path(proc_id);
             println!("proc_path: {}", proc_path);
-            print_common_info(event_record);
+            // print_common_info(event_record);
         }
     }
 }
@@ -168,12 +191,43 @@ unsafe fn print_common_info(event_record: *mut EVENT_RECORD) {
 
     let top_level_property = event_info_ptr.as_ref().unwrap().TopLevelPropertyCount;
     let event_info = &*event_info_ptr;
+    let mut pos = 0;
     for i in 0..top_level_property {
         let event_property_info = &*(&event_info.EventPropertyInfoArray as *const EVENT_PROPERTY_INFO).offset(i as isize);
         print_event_property_info(event_property_info);
         let property_name = tei_string(&buffer, event_property_info.NameOffset as usize);
-        println!("property_name: {}", property_name);
+        println!("pos: {}", pos);
+        let property_value = get_property_value(event_property_info, user_data as *const u8, &mut pos);
+        println!("property_name: {} , value: {}", property_name, property_value);
         println!();
+    }
+}
+
+
+
+unsafe fn get_process_path(pid: u32) -> String {
+    let process_handle = match OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) {
+        Ok(handle) => handle,
+        Err(e) => {
+            eprintln!("openprocess failed with error: {:?}",e);
+            return String::from("cant not get process handle");
+        }
+    };
+    if process_handle.is_invalid() {
+        eprintln!("openprocess failed with error: {:?}", GetLastError());
+        return String::from("bad path");
+    }
+    let mut buffer: Vec<u16> = vec![0; 260];
+    let mut size = buffer.len() as u32;
+
+    if QueryFullProcessImageNameW(process_handle, PROCESS_NAME_FORMAT(0), PWSTR(buffer.as_mut_ptr() as *mut u16), &mut size).is_ok() {
+        let _ = CloseHandle(process_handle);
+        let os_string = OsString::from_wide(&buffer[..size as usize]);
+        os_string.to_string_lossy().into_owned()
+    } else {
+        let _ = CloseHandle(process_handle);
+        eprintln!("queryfullprocessimagename failed with error: {:?}", GetLastError());
+        String::from("bad path")
     }
 }
 
@@ -202,31 +256,91 @@ unsafe fn print_hex(buffer: *const c_void, size: usize) {
     }
     println!();
 }
-
-unsafe fn get_process_path(pid: u32) -> String {
-    let process_handle = match OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) {
-        Ok(handle) => handle,
-        Err(e) => {
-            eprintln!("openprocess failed with error: {:?}",e);
-            return String::from("cant not get process handle");
+unsafe fn parse_user_data_info(user_data: *const u8, offset: usize, intype: DataType) -> String {
+    let mut ret = String::default();
+    match intype {
+        DataType::INT8 => {
+            let data = read_data::<i8>(user_data, offset);
+            ret = format!("{}", data).to_string();
         }
-    };
-    if process_handle.is_invalid() {
-        eprintln!("openprocess failed with error: {:?}", GetLastError());
-        return String::from("bad path");
-    }
-    let mut buffer: Vec<u16> = vec![0; 260];
-    let mut size = buffer.len() as u32;
+        DataType::UINT8 => {
+            let data = read_data::<u8>(user_data, offset);
+            ret = format!("{}", data).to_string();
+        }
+        DataType::INT16 => {
+            let data = read_data::<i16>(user_data, offset);
+            ret = format!("{}", data).to_string();
+        }
+        DataType::UINT16 => {
+            let data = read_data::<u16>(user_data, offset);
+            ret = format!("{}", data).to_string();
+        }
+        DataType::INT32 => {
+            let data = read_data::<i32>(user_data, offset);
+            ret = format!("{}", data).to_string();
+        }
+        DataType::UINT32 => {
+            let data = read_data::<u32>(user_data, offset);
+            ret = format!("{}", data).to_string();
+        }
+        DataType::INT64 => {
+            let data = read_data::<i64>(user_data, offset);
+            ret = format!("{}", data).to_string();
+        }
+        DataType::UINT64 => {
+            let data = read_data::<u64>(user_data, offset);
+            ret = format!("{}", data).to_string();
+        }
+        DataType::POINTER => {
+            let data = read_data::<u64>(user_data, offset);
+            ret = format!("{:X}", data).to_string();
+        }
+        DataType::STRING => {
+            let wide_ptr = user_data.add(offset) as *const u16;
+            let mut length = 0;
 
-    if QueryFullProcessImageNameW(process_handle, PROCESS_NAME_FORMAT(0), PWSTR(buffer.as_mut_ptr() as *mut u16), &mut size).is_ok() {
-        let _ = CloseHandle(process_handle);
-        let os_string = OsString::from_wide(&buffer[..size as usize]);
-        os_string.to_string_lossy().into_owned()
-    } else {
-        let _ = CloseHandle(process_handle);
-        eprintln!("queryfullprocessimagename failed with error: {:?}", GetLastError());
-        String::from("bad path")
+            while *wide_ptr.add(length) != 0 {
+                length += 1;
+            }
+            let wide_slice = slice::from_raw_parts(wide_ptr, length);
+            let os_string = OsString::from_wide(wide_slice);
+
+            ret = os_string.to_string_lossy().to_string()
+        }
     }
+    ret
+}
+
+unsafe fn get_property_value(info: &EVENT_PROPERTY_INFO, user_data: *const u8, pos: &mut usize) -> String {
+    let mut ret = String::new();
+    if info.Flags.0 & 0x1 != 0 {
+        println!("property_StructType");
+        ret = String::from("not supported type yet");  
+    } else if info.Flags.0 & 0x1 == 0 {
+        println!("property_nonStructType");
+        let intype = info.Anonymous1.nonStructType.InType;
+        println!("intype: {}", intype);
+        let data_type = match INTYPE_MAP.get(&intype) {
+            Some(data_type) => data_type,
+            None => {
+                return String::from("not supported type");
+            }
+        };
+        let length = {
+            if info.Anonymous3.length == 0 {
+                8
+            } else {
+                info.Anonymous3.length
+            }
+        };
+        let offset = *pos;
+        ret = parse_user_data_info(user_data, offset, data_type.clone());
+        *pos += length as usize;
+    } else if info.Flags.0 & 0x80 !=  0 {
+        println!("property_CustomSchema");
+        ret = String::from("not supported type yet");  
+    }
+    ret
 }
 
 fn print_event_property_info(info: &EVENT_PROPERTY_INFO) {
