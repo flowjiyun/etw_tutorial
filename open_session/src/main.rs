@@ -1,9 +1,12 @@
-use std::{ffi::{OsStr, OsString}, fs::OpenOptions, io::Write, os::windows::ffi::{OsStrExt, OsStringExt}, path::PathBuf, sync::mpsc, thread, time::Duration};
+use std::{ffi::{OsStr, OsString}, os::windows::ffi::{OsStrExt, OsStringExt}, sync::mpsc, thread, time::Duration};
 
+use audit::set_audit;
+use utils::log_output_to_file;
 use windows::{core::PWSTR, Win32::{Foundation::ERROR_SUCCESS, System::Diagnostics::Etw::{OpenTraceW, ProcessTrace, TdhGetEventInformation, EVENT_PROPERTY_INFO, EVENT_RECORD, EVENT_TRACE_LOGFILEW, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, TRACE_EVENT_INFO}}};
 use windows_service::{define_windows_service, service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType}, service_control_handler::{self, ServiceControlHandlerResult}, service_dispatcher, Result};
 
 mod audit;
+mod utils;
 define_windows_service!(ffi_service_main, my_service_main);
 
 fn my_service_main(_arguments: Vec<std::ffi::OsString>) {
@@ -12,6 +15,7 @@ fn my_service_main(_arguments: Vec<std::ffi::OsString>) {
     }
 }
 fn main() -> Result<()>{
+    set_audit();
     service_dispatcher::start("MyRustService", ffi_service_main)?;
     Ok(())
 }
@@ -84,25 +88,6 @@ fn run_service() -> Result<()> {
     })?;
 
     Ok(())
-}
-
-fn log_output_to_file(message: &str) {
-    let log_message = format!("{}\n", message);
-    let log_path = get_log_file_path();
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(log_path)
-        .unwrap();
-
-    file.write_all(log_message.as_bytes()).unwrap();
-}
-
-fn get_log_file_path() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.push("service.log");
-    path
 }
 
 unsafe fn print_common_info(event_record: *mut EVENT_RECORD) {
