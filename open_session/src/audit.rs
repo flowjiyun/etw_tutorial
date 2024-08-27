@@ -13,7 +13,7 @@ pub fn set_audit() {
  
         // LsaOpenPolicy 로컬 혹은 원격 시스템의 정책 객체를 생성하는 함수
         let status = LsaOpenPolicy(
-            None, // null 일경우 로컬 시스템의 수책을 열수 있음
+            None, // null 일경우 로컬 시스템의 정책을 열수 있음
             &object_attributes as *const LSA_OBJECT_ATTRIBUTES,
             POLICY_SET_AUDIT_REQUIREMENTS as u32,
             &mut policy_handle,
